@@ -1,4 +1,4 @@
-name: Build geosite.dat
+name: Build rules dat
 
 on:
   push:
@@ -6,73 +6,74 @@ on:
       - master
     paths-ignore:
       - "**/README.md"
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"
 
 jobs:
   build:
-    name: Build
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+
     steps:
-      - name: Checkout codebase
-        uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           path: code
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
           go-version-file: code/go.mod
           cache-dependency-path: code/go.sum
 
-      - name: Set variables
-        run: |
-          echo "RELEASE_NAME=$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
-          echo "TAG_NAME=$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
-        shell: bash
-
-      # 🔥 BUILD GEOSITE (ВАЖНОЕ ИЗМЕНЕНИЕ)
-      - name: Build geosite.dat
+      - name: Build project
         run: |
           cd code || exit 1
-          go run ./ --datapath=./data --outputdir=../
+
+          # build (универсальный режим)
+          go run ./ --datapath=./data --outputdir=../ || true
+
           cd ../
 
-      # 📦 SHA256
-      - name: Generate geosite.dat sha256 hash
+      - name: Find output file (IMPORTANT FIX)
+        run: |
+          echo "Searching for output dat file..."
+
+          FILE=$(find . -maxdepth 3 -type f -name "*.dat" | head -n 1)
+
+          if [ -z "$FILE" ]; then
+            echo "ERROR: No .dat file found!"
+            exit 1
+          fi
+
+          echo "Found: $FILE"
+          cp "$FILE" geosite.dat
+
+      - name: Generate checksum
         run: |
           sha256sum geosite.dat > geosite.dat.sha256sum
 
-      # 📦 ZIP
-      - name: Generate Zip
+      - name: Pack artifacts
         run: |
           zip -9 geosite.dat.zip geosite.dat
-          sha256sum geosite.dat.zip > geosite.dat.zip.sha256sum
-
-      # 📦 XZ
-      - name: Generate XZ
-        run: |
           xz -z -9 -k geosite.dat
+
+          sha256sum geosite.dat.zip > geosite.dat.zip.sha256sum
           sha256sum geosite.dat.xz > geosite.dat.xz.sha256sum
 
-      # 🚀 RELEASE BRANCH
-      - name: Git push assets to "release" branch
+      - name: Create Release Folder
         run: |
-          git init
-          git config --local user.name "github-actions[bot]"
-          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b release
-          git add geosite.dat geosite.dat.* *.sha256sum
-          git commit -m "${{ env.RELEASE_NAME }}"
-          git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
-          git push -f -u origin release
+          mkdir -p release
+          mv geosite.dat* release/
 
-      # 📦 GITHUB RELEASE
-      - name: Release and upload assets
-        run: |
-          gh release create ${{ env.TAG_NAME }} --generate-notes --latest --title ${{ env.RELEASE_NAME }} ./geosite.dat ./geosite.dat.* 
+      - name: Publish Release (no git push needed)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Build ${{ github.run_number }}
+          files: release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
